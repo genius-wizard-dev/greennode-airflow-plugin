@@ -1,61 +1,40 @@
 # GreenNode Airflow Plugin
 
-Plugin chính thức cho Apache Airflow để tích hợp với **GreenNode (VNG Cloud)**.
+Apache Airflow plugin để trigger và quản lý **Spark Job trên VNG Cloud Data Platform (GreenNode)**.
 
-Plugin cung cấp `GreenNodeOperator` giúp bạn dễ dàng trigger và quản lý job trên nền tảng GreenNode một cách chuyên nghiệp, tương tự như các plugin phổ biến khác (iOmete, Astronomer...).
+Plugin cung cấp `GreenNodeOperator` xử lý toàn bộ vòng đời job:
 
----
-
-## ✨ Tính năng chính
-
-- Tự động xử lý **VNG Cloud IAM Access Token** bên trong Operator
-- Hỗ trợ **polling** để chờ job hoàn thành
-- Hỗ trợ `do_xcom_push` để truyền dữ liệu giữa các task
-- Dễ dàng cấu hình qua **Airflow Connection** hoặc Environment Variable
-- Hỗ trợ Jinja templating (`{{ params.xxx }}`)
-- Thiết kế theo chuẩn Airflow Plugin (giống iOmete)
+1. Lấy IAM Access Token (OAuth2 client credentials, auto-refresh)
+2. Submit Spark Job run
+3. Poll status đến khi job kết thúc
+4. Cancel job nếu Airflow task bị kill
 
 ---
 
-## 📦 Yêu cầu
-
-- Python >= 3.10
-- Apache Airflow >= 2.8.0
-- `pip` hoặc `uv`
-
----
-
-## 🚀 Cách dựng (Setup)
-
-Plugin được register thông qua entry-point group `airflow.plugins` trong `pyproject.toml`:
-
-```toml
-[project.entry-points."airflow.plugins"]
-greennode_airflow_plugin = "greennode_airflow_plugin.plugin:GreenNodePlugin"
-```
-
-Airflow sẽ tự discover plugin sau khi package được `pip install`. Có 3 cách dựng tuỳ môi trường:
-
-### 1. Local / Standalone Airflow
+## Installation
 
 ```bash
 pip install git+https://github.com/genius-wizard-dev/greennode-airflow-plugin.git@main
-# hoặc cài từ source
+```
+
+Hoặc cài từ source:
+
+```bash
+git clone https://github.com/genius-wizard-dev/greennode-airflow-plugin.git
+cd greennode-airflow-plugin
 pip install -e .
 ```
 
-Sau khi cài, restart Airflow và verify:
+Restart Airflow scheduler/worker và verify:
 
 ```bash
 airflow plugins
-# Phải thấy: greennode_airflow_plugin
+# Phải thấy plugin "greennode" với operator GreenNodeOperator + hook VNGCloudHook
 ```
 
-### 2. Airflow trên Kubernetes — Dev (nhanh, không cần registry)
+### Cài trên Airflow Helm chart (dev)
 
-Dùng env `_PIP_ADDITIONAL_REQUIREMENTS` của image `apache/airflow` để pip install từ git mỗi lần pod khởi động.
-
-Trong `values.yaml` / `override.yaml` của Helm chart:
+Trong `values.yaml` / `override.yaml`:
 
 ```yaml
 env:
@@ -63,236 +42,263 @@ env:
     value: "git+https://github.com/genius-wizard-dev/greennode-airflow-plugin.git@main"
 ```
 
-Apply:
-
 ```bash
 helm upgrade <release> . -n <namespace> -f override.yaml
 kubectl -n <namespace> rollout restart deploy sts
 ```
 
-Verify:
+### Cài trên Airflow Helm chart (production)
 
-```bash
-kubectl -n <namespace> exec deploy/<release>-scheduler -- airflow plugins
-```
-
-**Lưu ý**:
-
-- Pod khởi động chậm hơn ~10–30s do phải pip install lại mỗi lần.
-- Repo private cần token: `git+https://<token>@github.com/...`.
-- Chỉ phù hợp dev. Production nên dùng cách 3.
-
-### 3. Airflow trên Kubernetes — Production (build custom image)
-
-Tạo `Dockerfile`:
-
-```dockerfile
-FROM apache/airflow:3.2.0
-RUN pip install --no-cache-dir \
-    git+https://github.com/genius-wizard-dev/greennode-airflow-plugin.git@<tag>
-```
-
-Build & push lên registry:
-
-```bash
-docker build -t <registry>/airflow-greennode:<tag> .
-docker push <registry>/airflow-greennode:<tag>
-```
-
-Trong `override.yaml`:
-
-```yaml
-defaultAirflowRepository: <registry>/airflow-greennode
-defaultAirflowTag: "<tag>"
-
-images:
-  airflow:
-    repository: <registry>/airflow-greennode
-    tag: "<tag>"
-    pullPolicy: IfNotPresent
-  pod_template:
-    repository: <registry>/airflow-greennode
-    tag: "<tag>"
-    pullPolicy: IfNotPresent
-```
-
-Apply:
-
-```bash
-helm upgrade <release> . -n <namespace> -f override.yaml
-kubectl -n <namespace> rollout restart deploy sts
-```
-
-> **Quan trọng**: Khi dùng `KubernetesExecutor`, image của `pod_template` cũng phải có plugin (vì task pod sinh từ template này). Đã được set đồng bộ trong block trên.
+Build custom image — xem [docs/k8s-production.md](#kubernetes-production) ở dưới.
 
 ---
 
-## 🔌 Cấu hình Connection
+## Configuration
 
-Hook `VNGCloudHook` chỉ đọc `login` + `password` từ Airflow Connection (không dùng `host`/`schema`/`extra`). Các URL endpoint được hardcode trong `hook.py` và có thể override qua tham số operator:
+Tạo Airflow Connection (UI: **Admin → Connections → Add**):
 
-| Endpoint           | Default                                                              | Override               |
-| ------------------ | -------------------------------------------------------------------- | ---------------------- |
-| Token URL (IAM)    | `https://pub-iamapis.api-dev.vngcloud.tech/accounts-api/v2/auth/token` | tham số `token_url`    |
-| Data Platform URL  | `https://dataplatform.api-dev.vngcloud.tech`                         | tham số `data_platform_url` |
+| Field            | Giá trị                                                            |
+| ---------------- | ------------------------------------------------------------------ |
+| Connection Id    | `vng_cloud_default` *(default — có thể đổi qua `vng_conn_id`)*     |
+| Connection Type  | `Generic`                                                          |
+| Host             | `https://pub-iamapis.api-dev.vngcloud.tech`                        |
+| Login            | `<VNG_CLIENT_ID>`                                                  |
+| Password         | `<VNG_CLIENT_SECRET>`                                              |
+| Extra (JSON)     | xem dưới                                                           |
 
-### Cách 1: Tạo Connection trên Airflow UI
+**Extra** (JSON, optional — override default URL):
 
-**Admin → Connections → Add a new record**:
-
-- **Connection Id**: `vng_iam` *(default — `VNGCloudHook.default_conn_name`)*
-- **Connection Type**: `Generic` (hoặc bất kỳ, vì chỉ dùng login/password)
-- **Login**: `<VNG_CLIENT_ID>`
-- **Password**: `<VNG_CLIENT_SECRET>`
-- Các field khác (host, schema, port, extra): **bỏ trống**
-
-### Cách 2: Dùng Environment Variable (dev nhanh)
-
-```bash
-export AIRFLOW_CONN_VNG_IAM='{"conn_type": "generic", "login": "<CLIENT_ID>", "password": "<CLIENT_SECRET>"}'
+```json
+{
+  "data_platform_url": "https://dataplatform.api-dev.vngcloud.tech",
+  "token_path": "/accounts-api/v2/auth/token"
+}
 ```
 
-Hoặc trong Helm chart (`override.yaml`):
+### Tạo Connection bằng env (CLI / Helm)
+
+```bash
+export AIRFLOW_CONN_VNG_CLOUD_DEFAULT='{
+  "conn_type": "generic",
+  "host": "https://pub-iamapis.api-dev.vngcloud.tech",
+  "login": "<CLIENT_ID>",
+  "password": "<CLIENT_SECRET>",
+  "extra": {
+    "data_platform_url": "https://dataplatform.api-dev.vngcloud.tech"
+  }
+}'
+```
+
+Trong Helm chart, đặt qua Kubernetes Secret:
+
+```bash
+kubectl -n airflow create secret generic vng-cloud-conn \
+  --from-literal=AIRFLOW_CONN_VNG_CLOUD_DEFAULT='{"conn_type":"generic","host":"https://pub-iamapis.api-dev.vngcloud.tech","login":"<CID>","password":"<CSECRET>","extra":{"data_platform_url":"https://dataplatform.api-dev.vngcloud.tech"}}'
+```
 
 ```yaml
+# override.yaml
 env:
-  - name: AIRFLOW_CONN_VNG_IAM
+  - name: AIRFLOW_CONN_VNG_CLOUD_DEFAULT
     valueFrom:
       secretKeyRef:
-        name: vng-iam-credentials
-        key: connection-uri
+        name: vng-cloud-conn
+        key: AIRFLOW_CONN_VNG_CLOUD_DEFAULT
 ```
 
-Tạo secret:
+### Fallback bằng env (dev nhanh, không khuyến khích production)
+
+Nếu connection không tồn tại, hook sẽ đọc credentials từ env:
 
 ```bash
-kubectl -n airflow create secret generic vng-iam-credentials \
-  --from-literal=connection-uri='{"conn_type":"generic","login":"<CLIENT_ID>","password":"<CLIENT_SECRET>"}'
-```
-
-### Cách 3: Fallback bằng env `VNG_CLIENT_ID` / `VNG_CLIENT_SECRET`
-
-Nếu không tìm thấy connection, hook sẽ đọc từ 2 env này:
-
-```bash
-export VNG_CLIENT_ID="<CLIENT_ID>"
-export VNG_CLIENT_SECRET="<CLIENT_SECRET>"
+export VNG_CLIENT_ID="..."
+export VNG_CLIENT_SECRET="..."
 ```
 
 ---
 
-## 🧑‍💻 Sử dụng trong DAG
+## Usage
 
 ```python
 from datetime import datetime
 from airflow import DAG
-from greennode_airflow_plugin.greennode_operator import GreenNodeOperator
+from greennode_airflow_plugin import GreenNodeOperator
 
 with DAG(
     dag_id="example_greennode_spark_job",
     start_date=datetime(2026, 1, 1),
     schedule=None,
     catchup=False,
+    tags=["greennode"],
 ) as dag:
 
     run_job = GreenNodeOperator(
         task_id="run_spark_job",
-        workspace_id="<WORKSPACE_ID>",
-        job_id="<SPARK_JOB_ID>",
-        application_args=["--input", "s3://bucket/path", "--mode", "prod"],
-        vng_conn_id="vng_iam",            # default; bỏ qua nếu trùng default_conn_name
+        workspace_id="ws-abc-123",
+        job_id="job-xyz-456",
+        application_args=["--date", "{{ ds }}", "--mode", "prod"],
         polling_period_seconds=15,
         do_xcom_push=True,
     )
 ```
 
-### Tham số `GreenNodeOperator`
+Xem thêm [`dags/example_greennode.py`](./dags/example_greennode.py).
 
-| Tham số                  | Bắt buộc | Default                       | Mô tả                                                |
-| ------------------------ | -------- | ----------------------------- | ---------------------------------------------------- |
-| `workspace_id`           | ✅       | —                             | Workspace ID trên Data Platform                      |
-| `job_id`                 | ✅       | —                             | Spark Job ID                                         |
-| `application_args`       | ❌       | `[""]`                        | List args truyền vào Spark application               |
-| `data_platform_url`      | ❌       | `DEFAULT_DATA_PLATFORM_URL`   | Override base URL Data Platform API                  |
-| `vng_conn_id`            | ❌       | `vng_iam`                     | Airflow Connection chứa client_id/client_secret      |
-| `token_url`              | ❌       | `DEFAULT_TOKEN_URL`           | Override IAM token endpoint                          |
-| `polling_period_seconds` | ❌       | `15`                          | Khoảng thời gian giữa các lần poll status            |
-| `do_xcom_push`           | ❌       | `False`                       | Push `workspace_id`, `job_id`, `run_id` qua XCom     |
+### `GreenNodeOperator` parameters
 
-### Trạng thái job
+| Parameter                | Required | Default              | Description                                                       |
+| ------------------------ | -------- | -------------------- | ----------------------------------------------------------------- |
+| `workspace_id`           | ✅       | —                    | Workspace ID (templated)                                          |
+| `job_id`                 | ✅       | —                    | Spark Job ID (templated)                                          |
+| `application_args`       | ❌       | `[""]`               | `list[str]`, `dict`, hoặc JSON string (templated)                 |
+| `vng_conn_id`            | ❌       | `vng_cloud_default`  | Airflow Connection ID                                             |
+| `token_url`              | ❌       | từ Connection / default | Override IAM token endpoint                                    |
+| `data_platform_url`      | ❌       | từ Connection / default | Override Data Platform base URL                                |
+| `polling_period_seconds` | ❌       | `15`                 | Thời gian giữa các lần poll status                                |
+| `do_xcom_push`           | ❌       | `False`              | Push `workspace_id`, `job_id`, `run_id` qua XCom                  |
 
-- **Pending** (tiếp tục poll): `QUEUING`, `SCHEDULING`, `PENDING`, `RUNNING`
-- **Success**: `SUCCESS`
-- **Failure** (raise `AirflowException`): `FAILED`, `CANCELLED`
+**Templated fields**: `workspace_id`, `job_id`, `application_args` — hỗ trợ Jinja `{{ ds }}`, `{{ params.x }}`, `{{ var.value.* }}`.
 
-Khi task bị Airflow kill, operator tự gọi `POST /api/v1/workspaces/{ws}/spark-jobs/{job}/runs/{runId}/cancel`.
+**Template extension**: `.json` — file `.json` sẽ được auto-load.
+
+### XCom keys
+
+| Key            | Constant                  | Mô tả          |
+| -------------- | ------------------------- | -------------- |
+| `workspace_id` | `XCOM_WORKSPACE_ID_KEY`   | Workspace ID   |
+| `job_id`       | `XCOM_JOB_ID_KEY`         | Spark Job ID   |
+| `run_id`       | `XCOM_RUN_ID_KEY`         | Run ID         |
+
+### Spark Job states
+
+```python
+from greennode_airflow_plugin import SparkJobState
+
+SparkJobState.SUCCESS.is_final        # True
+SparkJobState.SUCCESS.is_successful   # True
+SparkJobState.RUNNING.is_final        # False
+```
+
+| State        | Final? | Success? |
+| ------------ | ------ | -------- |
+| `QUEUING`    | ❌     | —        |
+| `SCHEDULING` | ❌     | —        |
+| `PENDING`    | ❌     | —        |
+| `RUNNING`    | ❌     | —        |
+| `SUCCESS`    | ✅     | ✅       |
+| `FAILED`     | ✅     | ❌       |
+| `CANCELLED`  | ✅     | ❌       |
 
 ---
 
-## 🛠️ Phát triển
+## Kubernetes (Production)
+
+Build custom image (recommend):
+
+```dockerfile
+FROM apache/airflow:3.2.0
+RUN pip install --no-cache-dir \
+    git+https://github.com/genius-wizard-dev/greennode-airflow-plugin.git@v0.2.0
+```
+
+```bash
+docker build -t <registry>/airflow-greennode:0.2.0 .
+docker push <registry>/airflow-greennode:0.2.0
+```
+
+```yaml
+# override.yaml
+defaultAirflowRepository: <registry>/airflow-greennode
+defaultAirflowTag: "0.2.0"
+
+images:
+  airflow:
+    repository: <registry>/airflow-greennode
+    tag: "0.2.0"
+    pullPolicy: IfNotPresent
+  pod_template:
+    repository: <registry>/airflow-greennode
+    tag: "0.2.0"
+    pullPolicy: IfNotPresent
+```
+
+> **KubernetesExecutor**: image `pod_template` cũng phải chứa plugin (task pod sinh từ template này).
+
+---
+
+## Development
 
 ```bash
 git clone https://github.com/genius-wizard-dev/greennode-airflow-plugin.git
 cd greennode-airflow-plugin
-uv pip install -e .
+make install          # uv pip install -e ".[dev]"
+make test             # pytest
+make lint             # ruff + mypy
+make format           # black + isort
+make build            # build wheel
 ```
 
-Cấu trúc:
+### Project structure
 
 ```
-greennode_airflow_plugin/
-├── __init__.py
-├── plugin.py              # AirflowPlugin class
-├── greennode_operator.py  # GreenNodeOperator
-└── hook.py                # GreenNodeHook (IAM token, HTTP client)
+greennode-airflow-plugin/
+├── greennode_airflow_plugin/
+│   ├── __init__.py            # Package metadata, public exports
+│   ├── plugin.py              # AirflowPlugin registration
+│   ├── greennode_operator.py  # GreenNodeOperator + SparkJobState
+│   └── hook.py                # VNGCloudHook (IAM, Data Platform API)
+├── dags/
+│   └── example_greennode.py
+├── tests/
+│   ├── test_state.py
+│   └── test_operator.py
+├── Makefile
+├── pyproject.toml
+└── README.md
 ```
-
-Sau khi sửa code, push lên `main`:
-
-```bash
-git add .
-git commit -m "feat: ..."
-git push origin main
-```
-
-Trên cluster K8s (dev cách 2): chỉ cần `kubectl rollout restart` — pod sẽ pip install lại từ git commit mới nhất.
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
-**`airflow plugins` không hiển thị plugin**
+**`airflow plugins` không thấy plugin**
 
-1. Kiểm tra entry-point group phải là `airflow.plugins` (KHÔNG phải `apache_airflow_plugin`):
+1. Entry-point group phải là `airflow.plugins`:
    ```toml
    [project.entry-points."airflow.plugins"]
+   greennode = "greennode_airflow_plugin.plugin:GreenNodePlugin"
    ```
-2. Kiểm tra package đã cài thật chưa:
+2. Verify package đã cài:
    ```bash
    pip show greennode-airflow-plugin
    ```
-3. Xem log entrypoint xem pip install có lỗi không:
+3. Check log entrypoint:
    ```bash
-   kubectl -n <ns> logs deploy/<release>-scheduler | grep -iE "pip|greennode"
+   kubectl -n airflow logs deploy/airflow-scheduler | grep -iE "pip|greennode"
    ```
 
 **Task pod (KubernetesExecutor) không có plugin**
 
 - Đảm bảo `images.pod_template` cùng image với scheduler/worker.
-- Hoặc env `_PIP_ADDITIONAL_REQUIREMENTS` được set ở top-level `env:` để propagate xuống task pod.
+- Hoặc set env `_PIP_ADDITIONAL_REQUIREMENTS` ở top-level `env:` để propagate.
 
 **Repo private, pip clone fail**
 
 ```yaml
 env:
   - name: _PIP_ADDITIONAL_REQUIREMENTS
-    value: "git+https://<github_pat>@github.com/genius-wizard-dev/greennode-airflow-plugin.git@main"
+    value: "git+https://${GITHUB_TOKEN}@github.com/genius-wizard-dev/greennode-airflow-plugin.git@main"
 ```
 
-Nên đặt token qua Kubernetes Secret thay vì hardcode trong values.
+Token nên đặt qua Kubernetes Secret, không hardcode.
+
+**Token request fail (401/403)**
+
+- Kiểm tra `Host` field của Connection có đúng IAM endpoint base không (mặc định: `https://pub-iamapis.api-dev.vngcloud.tech`).
+- Kiểm tra `client_id` / `client_secret` trong VNG Cloud IAM console.
 
 ---
 
-## 📄 License
+## License
 
-MIT
+Apache 2.0

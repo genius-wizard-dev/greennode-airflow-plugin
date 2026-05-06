@@ -1,166 +1,179 @@
+"""GreenNode Operator — trigger và theo dõi Spark Job trên VNG Data Platform."""
+
+import json
 import time
+from enum import Enum
 from typing import Any
-import requests
+
 from airflow.exceptions import AirflowException
 from airflow.models import BaseOperator
-from greennode_airflow_plugin.hook import VNGCloudHook, DEFAULT_DATA_PLATFORM_URL, DEFAULT_TOKEN_URL
+
+from greennode_airflow_plugin.hook import VNGCloudHook
+
+XCOM_WORKSPACE_ID_KEY = "workspace_id"
+XCOM_JOB_ID_KEY = "job_id"
+XCOM_RUN_ID_KEY = "run_id"
+
+
+class SparkJobState(str, Enum):
+    """Trạng thái Spark Job theo Data Platform API schema."""
+
+    QUEUING = "QUEUING"
+    SCHEDULING = "SCHEDULING"
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    UNKNOWN = "UNKNOWN"
+
+    @classmethod
+    def from_str(cls, value: str | None) -> "SparkJobState":
+        if not value:
+            return cls.UNKNOWN
+        try:
+            return cls(value.upper())
+        except ValueError:
+            return cls.UNKNOWN
+
+    @property
+    def is_final(self) -> bool:
+        return self in {self.SUCCESS, self.FAILED, self.CANCELLED}
+
+    @property
+    def is_successful(self) -> bool:
+        return self == self.SUCCESS
 
 
 class GreenNodeOperator(BaseOperator):
     """
-    GreenNodeOperator - Trigger Spark Job thông qua Data Platform API và poll trạng thái.
+    Trigger Spark Job trên VNG Data Platform và poll trạng thái cho đến khi hoàn thành.
 
     API flow:
-      1. POST /api/v1/workspaces/{ws}/spark-jobs/{job}/runs              →  trigger job run
-      2. GET  /api/v1/workspaces/{ws}/spark-jobs/{job}/runs/{runId}      →  poll status
-      3. POST /api/v1/workspaces/{ws}/spark-jobs/{job}/runs/{runId}/cancel  →  cancel (on kill)
+      1. POST /api/v1/workspaces/{ws}/spark-jobs/{job}/runs
+      2. GET  /api/v1/workspaces/{ws}/spark-jobs/{job}/runs/{runId}
+      3. POST /api/v1/workspaces/{ws}/spark-jobs/{job}/runs/{runId}/cancel  (on_kill)
     """
 
-    # ── Trạng thái theo Data Platform API schema ──
-    # Chưa kết thúc → tiếp tục poll
-    _PENDING_STATES = {"QUEUING", "SCHEDULING", "PENDING", "RUNNING"}
+    template_fields = ("workspace_id", "job_id", "application_args")
+    template_ext = (".json",)
 
-    # Kết thúc thành công
-    _SUCCESS_STATES = {"SUCCESS"}
-
-    # Kết thúc thất bại
-    _FAILURE_STATES = {"FAILED", "CANCELLED"}
+    # GreenNode brand colors (graph view)
+    ui_color = "#00B14F"
+    ui_fgcolor = "#ffffff"
 
     def __init__(
         self,
         workspace_id: str,
         job_id: str,
-        application_args: list[str] | None = None,
-        data_platform_url: str | None = None,
+        application_args: list[str] | dict[str, Any] | str | None = None,
         vng_conn_id: str | None = None,
         token_url: str | None = None,
+        data_platform_url: str | None = None,
         polling_period_seconds: int = 15,
         do_xcom_push: bool = False,
-        *args,
-        **kwargs
+        **kwargs,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__(**kwargs)
+
+        if not workspace_id:
+            raise AirflowException("Tham số `workspace_id` là bắt buộc.")
+        if not job_id:
+            raise AirflowException("Tham số `job_id` là bắt buộc.")
+
         self.workspace_id = workspace_id
         self.job_id = job_id
-        self.application_args = application_args or [""]
-        self.data_platform_url = (data_platform_url or DEFAULT_DATA_PLATFORM_URL).rstrip("/")
+        self.application_args = application_args
         self.vng_conn_id = vng_conn_id
-        self.token_url = token_url or DEFAULT_TOKEN_URL
+        self.token_url = token_url
+        self.data_platform_url = data_platform_url
         self.polling_period_seconds = polling_period_seconds
         self.do_xcom_push = do_xcom_push
 
-        # NOTE: config_override không dùng nữa vì Data Platform API dùng application_args.
-        # self.config_override = config_override or {}
-
-        # Internal state for on_kill cancel
         self._run_id: str | None = None
-        self._cancel_url: str | None = None
-        self._headers: dict[str, str] | None = None
+        self._hook: VNGCloudHook | None = None
 
-    # ── helpers ──────────────────────────────────────────────────────────
+    def _get_hook(self) -> VNGCloudHook:
+        if self._hook is None:
+            self._hook = VNGCloudHook(
+                vng_conn_id=self.vng_conn_id,
+                token_url=self.token_url,
+                data_platform_url=self.data_platform_url,
+            )
+        return self._hook
 
     @staticmethod
-    def _unwrap_data(resp_json: dict[str, Any]) -> dict[str, Any]:
-        """
-        Data Platform API wraps tất cả response trong envelope:
-            {"success": true, "data": {...}, "error": null, "message": "..."}
-        Trả về phần `data`. Nếu success=false hoặc không có data thì raise.
-        """
-        if not resp_json.get("success", True):
-            error_msg = resp_json.get("error") or resp_json.get("message") or "Unknown error"
-            raise AirflowException(f"Data Platform API error: {error_msg}")
-        return resp_json.get("data") or {}
-
-    # ── execute ──────────────────────────────────────────────────────────
+    def _normalize_args(value: Any) -> list[str]:
+        if value is None:
+            return [""]
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            return [json.dumps(value)]
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return parsed
+                if isinstance(parsed, dict):
+                    return [json.dumps(parsed)]
+            except json.JSONDecodeError:
+                pass
+            return [value]
+        raise AirflowException(f"application_args type không hỗ trợ: {type(value)}")
 
     def execute(self, context):
-        hook = VNGCloudHook(vng_conn_id=self.vng_conn_id, token_url=self.token_url)
-        self._headers = hook.get_headers()
+        hook = self._get_hook()
+        payload = {"application_args": self._normalize_args(self.application_args)}
 
-        base = self.data_platform_url
-        ws, jid = self.workspace_id, self.job_id
-        trigger_url = f"{base}/api/v1/workspaces/{ws}/spark-jobs/{jid}/runs"
-        payload = {"application_args": self.application_args}
-
-        self.log.info(f"Triggering Spark Job [{jid}] in workspace [{ws}]")
-        self.log.debug(f"POST {trigger_url} with payload: {payload}")
-
-        # ── Step 1: Trigger job run ──
-        trigger_resp = requests.post(trigger_url, headers=self._headers, json=payload, timeout=60)
-        trigger_resp.raise_for_status()
-        data = self._unwrap_data(trigger_resp.json())
+        self.log.info("Triggering Spark Job [%s] in workspace [%s]", self.job_id, self.workspace_id)
+        data = hook.submit_job_run(self.workspace_id, self.job_id, payload)
 
         self._run_id = data.get("id") or data.get("run_id")
         if not self._run_id:
             raise AirflowException(f"Không tìm thấy run id trong response: {data}")
+        self.log.info("Job triggered. run_id=%s", self._run_id)
 
-        self.log.info(f"Job triggered successfully. run_id = {self._run_id}")
-
-        # Chuẩn bị URL cho cancel (on_kill)
-        self._cancel_url = f"{base}/api/v1/workspaces/{ws}/spark-jobs/{jid}/runs/{self._run_id}/cancel"
-
-        # ── XCom push ──
         if self.do_xcom_push:
-            self.xcom_push(key="workspace_id", value=ws)
-            self.xcom_push(key="job_id", value=jid)
-            self.xcom_push(key="run_id", value=self._run_id)
+            ti = context["ti"]
+            ti.xcom_push(key=XCOM_WORKSPACE_ID_KEY, value=self.workspace_id)
+            ti.xcom_push(key=XCOM_JOB_ID_KEY, value=self.job_id)
+            ti.xcom_push(key=XCOM_RUN_ID_KEY, value=self._run_id)
 
-        # ── Step 2: Poll job status ──
-        status_url = f"{base}/api/v1/workspaces/{ws}/spark-jobs/{jid}/runs/{self._run_id}"
-        self._poll_job_status(status_url)
-
+        self._poll_until_final(hook)
         return data
 
-    # ── polling ──────────────────────────────────────────────────────────
-
-    def _poll_job_status(self, status_url: str):
-        """Poll trạng thái job run cho đến khi đạt trạng thái kết thúc."""
-        self.log.info("Starting polling job status...")
-
+    def _poll_until_final(self, hook: VNGCloudHook) -> None:
+        self.log.info("Bắt đầu polling status (interval=%ss)...", self.polling_period_seconds)
         while True:
-            resp = requests.get(status_url, headers=self._headers, timeout=30)
-            resp.raise_for_status()
-            data = self._unwrap_data(resp.json())
-
-            status = (data.get("status") or "").upper()
+            data = hook.get_job_run(self.workspace_id, self.job_id, self._run_id)
+            state = SparkJobState.from_str(data.get("status"))
             self.log.info(
-                "Current status: %s  (exit_reason=%s, attempt=%s/%s)",
-                status,
+                "Status=%s exit_reason=%s attempt=%s/%s",
+                state.value,
                 data.get("exit_reason"),
                 data.get("attempt_number"),
                 data.get("max_attempts"),
             )
 
-            if status in self._SUCCESS_STATES:
-                self.log.info("Job completed successfully!")
-                return
-            elif status in self._FAILURE_STATES:
+            if state.is_final:
+                if state.is_successful:
+                    self.log.info("Job %s hoàn thành thành công.", self._run_id)
+                    return
                 raise AirflowException(
-                    f"Spark Job failed with status: {status}. "
-                    f"exit_reason={data.get('exit_reason')}, error={data.get('error_summary')}"
+                    f"Spark Job thất bại với state={state.value} "
+                    f"exit_reason={data.get('exit_reason')} error={data.get('error_summary')}"
                 )
-            elif status in self._PENDING_STATES:
-                time.sleep(self.polling_period_seconds)
-            else:
-                self.log.warning("Unknown status '%s', continuing to poll...", status)
-                time.sleep(self.polling_period_seconds)
 
-    # ── on_kill ──────────────────────────────────────────────────────────
+            time.sleep(self.polling_period_seconds)
 
     def on_kill(self):
-        """
-        Gọi cancel endpoint khi Airflow task bị kill.
-        POST /api/v1/workspaces/{ws}/spark-jobs/{job}/runs/{runId}/cancel
-        """
-        if not self._cancel_url or not self._headers:
-            self.log.warning("Cannot cancel: cancel_url or headers not initialized.")
+        if not self._run_id:
+            self.log.warning("Không có run_id để cancel.")
             return
-
-        self.log.info("Task bị kill - cancelling job run [%s]...", self._run_id)
+        self.log.info("Task bị kill — cancelling job run [%s]...", self._run_id)
         try:
-            cancel_resp = requests.post(self._cancel_url, headers=self._headers, timeout=30)
-            cancel_resp.raise_for_status()
-            self._unwrap_data(cancel_resp.json())
-            self.log.info("Job run [%s] cancelled successfully.", self._run_id)
+            self._get_hook().cancel_job_run(self.workspace_id, self.job_id, self._run_id)
+            self.log.info("Cancelled run [%s].", self._run_id)
         except Exception as e:
-            self.log.error("Failed to cancel job run [%s]: %s", self._run_id, e)
+            self.log.error("Cancel run [%s] thất bại: %s", self._run_id, e)
