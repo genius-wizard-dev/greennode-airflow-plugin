@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["requests>=2.28.0", "apache-airflow>=2.8.0"]
 
-[project.entry-points.'apache_airflow_plugin']
+[project.entry-points."airflow.plugins"]
 greennode_airflow_plugin = "greennode_airflow_plugin.plugin:GreenNodePlugin"
 
 [build-system]
