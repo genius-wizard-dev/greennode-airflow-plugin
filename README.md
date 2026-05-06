@@ -77,6 +77,7 @@ kubectl -n <namespace> exec deploy/<release>-scheduler -- airflow plugins
 ```
 
 **Lưu ý**:
+
 - Pod khởi động chậm hơn ~10–30s do phải pip install lại mỗi lần.
 - Repo private cần token: `git+https://<token>@github.com/...`.
 - Chỉ phù hợp dev. Production nên dùng cách 3.
@@ -128,18 +129,54 @@ kubectl -n <namespace> rollout restart deploy sts
 
 ## 🔌 Cấu hình Connection
 
-Trong Airflow UI: **Admin → Connections → Add**:
+Hook `VNGCloudHook` chỉ đọc `login` + `password` từ Airflow Connection (không dùng `host`/`schema`/`extra`). Các URL endpoint được hardcode trong `hook.py` và có thể override qua tham số operator:
 
-- **Conn Id**: `greennode_default`
-- **Conn Type**: `HTTP`
-- **Host**: `https://api.greennode.ai`
-- **Login**: `<VNG_CLOUD_CLIENT_ID>`
-- **Password**: `<VNG_CLOUD_CLIENT_SECRET>`
+| Endpoint           | Default                                                              | Override               |
+| ------------------ | -------------------------------------------------------------------- | ---------------------- |
+| Token URL (IAM)    | `https://pub-iamapis.api-dev.vngcloud.tech/accounts-api/v2/auth/token` | tham số `token_url`    |
+| Data Platform URL  | `https://dataplatform.api-dev.vngcloud.tech`                         | tham số `data_platform_url` |
 
-Hoặc dùng env:
+### Cách 1: Tạo Connection trên Airflow UI
+
+**Admin → Connections → Add a new record**:
+
+- **Connection Id**: `vng_iam` *(default — `VNGCloudHook.default_conn_name`)*
+- **Connection Type**: `Generic` (hoặc bất kỳ, vì chỉ dùng login/password)
+- **Login**: `<VNG_CLIENT_ID>`
+- **Password**: `<VNG_CLIENT_SECRET>`
+- Các field khác (host, schema, port, extra): **bỏ trống**
+
+### Cách 2: Dùng Environment Variable (dev nhanh)
 
 ```bash
-export AIRFLOW_CONN_GREENNODE_DEFAULT='http://<client_id>:<client_secret>@api.greennode.ai'
+export AIRFLOW_CONN_VNG_IAM='{"conn_type": "generic", "login": "<CLIENT_ID>", "password": "<CLIENT_SECRET>"}'
+```
+
+Hoặc trong Helm chart (`override.yaml`):
+
+```yaml
+env:
+  - name: AIRFLOW_CONN_VNG_IAM
+    valueFrom:
+      secretKeyRef:
+        name: vng-iam-credentials
+        key: connection-uri
+```
+
+Tạo secret:
+
+```bash
+kubectl -n airflow create secret generic vng-iam-credentials \
+  --from-literal=connection-uri='{"conn_type":"generic","login":"<CLIENT_ID>","password":"<CLIENT_SECRET>"}'
+```
+
+### Cách 3: Fallback bằng env `VNG_CLIENT_ID` / `VNG_CLIENT_SECRET`
+
+Nếu không tìm thấy connection, hook sẽ đọc từ 2 env này:
+
+```bash
+export VNG_CLIENT_ID="<CLIENT_ID>"
+export VNG_CLIENT_SECRET="<CLIENT_SECRET>"
 ```
 
 ---
@@ -147,27 +184,48 @@ export AIRFLOW_CONN_GREENNODE_DEFAULT='http://<client_id>:<client_secret>@api.gr
 ## 🧑‍💻 Sử dụng trong DAG
 
 ```python
-from airflow import DAG
 from datetime import datetime
+from airflow import DAG
 from greennode_airflow_plugin.greennode_operator import GreenNodeOperator
 
 with DAG(
-    dag_id="example_greennode",
+    dag_id="example_greennode_spark_job",
     start_date=datetime(2026, 1, 1),
     schedule=None,
     catchup=False,
 ) as dag:
 
     run_job = GreenNodeOperator(
-        task_id="run_greennode_job",
-        conn_id="greennode_default",
-        job_id="my-job-id",
-        params={"input": "value"},
-        wait_for_completion=True,
-        poll_interval=10,
+        task_id="run_spark_job",
+        workspace_id="<WORKSPACE_ID>",
+        job_id="<SPARK_JOB_ID>",
+        application_args=["--input", "s3://bucket/path", "--mode", "prod"],
+        vng_conn_id="vng_iam",            # default; bỏ qua nếu trùng default_conn_name
+        polling_period_seconds=15,
         do_xcom_push=True,
     )
 ```
+
+### Tham số `GreenNodeOperator`
+
+| Tham số                  | Bắt buộc | Default                       | Mô tả                                                |
+| ------------------------ | -------- | ----------------------------- | ---------------------------------------------------- |
+| `workspace_id`           | ✅       | —                             | Workspace ID trên Data Platform                      |
+| `job_id`                 | ✅       | —                             | Spark Job ID                                         |
+| `application_args`       | ❌       | `[""]`                        | List args truyền vào Spark application               |
+| `data_platform_url`      | ❌       | `DEFAULT_DATA_PLATFORM_URL`   | Override base URL Data Platform API                  |
+| `vng_conn_id`            | ❌       | `vng_iam`                     | Airflow Connection chứa client_id/client_secret      |
+| `token_url`              | ❌       | `DEFAULT_TOKEN_URL`           | Override IAM token endpoint                          |
+| `polling_period_seconds` | ❌       | `15`                          | Khoảng thời gian giữa các lần poll status            |
+| `do_xcom_push`           | ❌       | `False`                       | Push `workspace_id`, `job_id`, `run_id` qua XCom     |
+
+### Trạng thái job
+
+- **Pending** (tiếp tục poll): `QUEUING`, `SCHEDULING`, `PENDING`, `RUNNING`
+- **Success**: `SUCCESS`
+- **Failure** (raise `AirflowException`): `FAILED`, `CANCELLED`
+
+Khi task bị Airflow kill, operator tự gọi `POST /api/v1/workspaces/{ws}/spark-jobs/{job}/runs/{runId}/cancel`.
 
 ---
 
