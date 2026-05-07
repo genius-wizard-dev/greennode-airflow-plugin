@@ -1,6 +1,6 @@
 [project]
 name = "greennode-airflow-plugin"
-version = "0.3.2"
+version = "0.3.3"
 description = "Apache Airflow plugin để tích hợp với GreenNode (VNG Cloud Data Platform)."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -32,6 +32,9 @@ dependencies = ["apache-airflow>=2.8.0", "requests>=2.28.0"]
 Homepage = "https://github.com/genius-wizard-dev/greennode-airflow-plugin"
 Repository = "https://github.com/genius-wizard-dev/greennode-airflow-plugin"
 Issues = "https://github.com/genius-wizard-dev/greennode-airflow-plugin/issues"
+
+[project.entry-points."airflow.plugins"]
+greennode = "greennode_airflow_plugin.plugin:GreenNodePlugin"
 
 [project.optional-dependencies]
 dev = [
