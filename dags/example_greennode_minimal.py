@@ -6,8 +6,8 @@ from airflow import DAG
 from greennode_airflow_plugin import GreenNodeOperator
 
 args = {
-    "owner": "airflow",
-    "email": ["airflow@example.com"],
+    "owner": "greennode",
+    "email": ["greennode@example.com"],
     "depends_on_past": False,
     "start_date": pendulum.datetime(2026, 1, 1, tz="UTC"),
 }
