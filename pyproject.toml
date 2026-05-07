@@ -1,6 +1,6 @@
 [project]
 name = "greennode-airflow-plugin"
-version = "0.3.3"
+version = "0.3.4"
 description = "Apache Airflow plugin để tích hợp với GreenNode (VNG Cloud Data Platform)."
 readme = "README.md"
 license = { text = "Apache-2.0" }

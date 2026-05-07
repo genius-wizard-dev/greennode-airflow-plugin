@@ -79,16 +79,28 @@ Build custom image — xem [Kubernetes (Production)](#kubernetes-production) ở
 
 ## Configuration
 
-Tạo Airflow Connection (UI: **Admin → Connections → Add**):
+Plugin hỗ trợ **3 cách** setup credentials, ưu tiên theo thứ tự sau:
+
+> **Connection** → **Variable** → **Env var**
+
+Plugin tìm credentials ở Connection trước, nếu không có thì sang Variable, cuối cùng là env. Chọn **1 trong 3** tuỳ nhu cầu.
+
+---
+
+### Cách 1 — Airflow Connection ⭐ (recommend cho production)
+
+Password được mã hóa Fernet, có UI riêng, multi-environment dễ dàng (`vng_dev`, `vng_prod`...).
+
+**UI: Admin → Connections → Add**
 
 | Field           | Giá trị                                                        |
 | --------------- | -------------------------------------------------------------- |
 | Connection Id   | `vng_cloud_default` _(default — có thể đổi qua `vng_conn_id`)_ |
 | Connection Type | `Generic`                                                      |
-| Host            | `https://dev-iam-proxy.dataplatform.vngcloud.tech`                    |
+| Host            | `https://dev-iam-proxy.dataplatform.vngcloud.tech`             |
 | Login           | `<VNG_CLIENT_ID>`                                              |
 | Password        | `<VNG_CLIENT_SECRET>`                                          |
-| Extra (JSON)    | xem dưới                                                       |
+| Extra (JSON)    | _(optional — xem dưới)_                                        |
 
 **Extra** (JSON, optional — override default URL):
 
@@ -99,21 +111,7 @@ Tạo Airflow Connection (UI: **Admin → Connections → Add**):
 }
 ```
 
-### Tạo Connection bằng env (CLI / Helm)
-
-```bash
-export AIRFLOW_CONN_VNG_CLOUD_DEFAULT='{
-  "conn_type": "generic",
-  "host": "https://dev-iam-proxy.dataplatform.vngcloud.tech",
-  "login": "<CLIENT_ID>",
-  "password": "<CLIENT_SECRET>",
-  "extra": {
-    "data_platform_url": "https://dev-backend-proxy.dataplatform.vngcloud.tech"
-  }
-}'
-```
-
-Trong Helm chart, đặt qua Kubernetes Secret:
+**Đặt qua Kubernetes Secret (Helm):**
 
 ```bash
 kubectl -n airflow create secret generic vng-cloud-conn \
@@ -130,14 +128,39 @@ env:
         key: AIRFLOW_CONN_VNG_CLOUD_DEFAULT
 ```
 
-### Fallback bằng env (dev nhanh, không khuyến khích production)
+---
 
-Nếu connection không tồn tại, hook sẽ đọc credentials từ env:
+### Cách 2 — Airflow Variables (đơn giản, giống iomete)
+
+Setup nhanh không cần hiểu Connection, nhưng **không encrypt mặc định**. Phù hợp dev hoặc team nhỏ.
+
+**UI: Admin → Variables → Add**
+
+| Variable name             | Required | Default                                                       |
+| ------------------------- | -------- | ------------------------------------------------------------- |
+| `vng_client_id`           | ✅       | —                                                             |
+| `vng_client_secret`       | ✅       | —                                                             |
+| `vng_iam_host`            | ❌       | `https://dev-iam-proxy.dataplatform.vngcloud.tech`            |
+| `vng_token_path`          | ❌       | `/accounts-api/v2/auth/token`                                 |
+| `vng_data_platform_url`   | ❌       | `https://dev-backend-proxy.dataplatform.vngcloud.tech/`       |
+
+**Set qua CLI:**
+
+```bash
+airflow variables set vng_client_id "<CLIENT_ID>"
+airflow variables set vng_client_secret "<CLIENT_SECRET>"
+```
+
+---
+
+### Cách 3 — Env var (local dev, không khuyến khích production)
 
 ```bash
 export VNG_CLIENT_ID="..."
 export VNG_CLIENT_SECRET="..."
 ```
+
+Chỉ override 2 credentials cốt lõi. Để override URL endpoints, dùng Connection hoặc Variable.
 
 ---
 
@@ -318,9 +341,19 @@ GitHub Actions sẽ tự build và publish lên TestPyPI. Để publish lên PyP
 
 **Token request fail (401/403)**
 
-- Kiểm tra `Host` field của Connection có đúng IAM endpoint base không (mặc định: `https://dev-iam-proxy.dataplatform.vngcloud.tech`).
-- Kiểm tra `client_id` / `client_secret` trong VNG Cloud IAM console.
-- Xác minh cả `client_id` lẫn `client_secret` thuộc cùng environment (dev / prod).
+- Kiểm tra credentials đúng theo cách bạn setup (Connection / Variable / env). Xem priority order ở [Configuration](#configuration).
+- Verify `client_id` / `client_secret` trong VNG Cloud IAM console.
+- Xác minh cả `client_id` lẫn `client_secret` thuộc cùng environment (dev / prod) và cùng `iam_host`.
+
+**`VNG Cloud credentials are not configured`**
+
+Plugin không tìm được credentials qua bất kỳ cách nào trong 3. Check theo thứ tự ưu tiên:
+
+```bash
+airflow connections get vng_cloud_default     # Cách 1
+airflow variables get vng_client_id           # Cách 2
+echo $VNG_CLIENT_ID                            # Cách 3
+```
 
 **Lỗi parse DAG: "Don't use runtime-varying value as argument in Dag constructor"**
 

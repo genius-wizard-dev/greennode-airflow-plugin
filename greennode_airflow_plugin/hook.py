@@ -45,7 +45,7 @@ class VNGCloudHook(BaseHook):
         self._client_secret = cfg["client_secret"]
 
     def _load_connection_config(self) -> dict[str, Any]:
-        """Load config from Airflow Connection; fallback to env vars if connection is missing."""
+        """Load config with priority: Connection → Variable → env var."""
         try:
             conn = self.get_connection(self.vng_conn_id)
         except Exception:
@@ -66,14 +66,24 @@ class VNGCloudHook(BaseHook):
             token_path = extra.get("token_path", token_path)
             data_platform_url = extra.get("data_platform_url", data_platform_url)
 
+        if not client_id or not client_secret:
+            from airflow.models import Variable
+
+            client_id = client_id or Variable.get("vng_client_id", default_var=None)
+            client_secret = client_secret or Variable.get("vng_client_secret", default_var=None)
+            iam_host = Variable.get("vng_iam_host", default_var=iam_host).rstrip("/")
+            token_path = Variable.get("vng_token_path", default_var=token_path)
+            data_platform_url = Variable.get("vng_data_platform_url", default_var=data_platform_url)
+
         client_id = client_id or os.getenv("VNG_CLIENT_ID")
         client_secret = client_secret or os.getenv("VNG_CLIENT_SECRET")
 
         if not client_id or not client_secret:
             raise AirflowException(
-                f"VNG Cloud credentials are not configured. "
-                f"Create Airflow Connection '{self.vng_conn_id}' with login=client_id, "
-                f"password=client_secret, or set env VNG_CLIENT_ID / VNG_CLIENT_SECRET."
+                f"VNG Cloud credentials are not configured. Set them via one of:\n"
+                f"  1. Airflow Connection '{self.vng_conn_id}' (login=client_id, password=client_secret)\n"
+                f"  2. Airflow Variables: 'vng_client_id', 'vng_client_secret'\n"
+                f"  3. Env vars: VNG_CLIENT_ID, VNG_CLIENT_SECRET"
             )
 
         if not token_path.startswith("/"):
