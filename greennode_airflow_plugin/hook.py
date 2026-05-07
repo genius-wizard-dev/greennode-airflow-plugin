@@ -12,6 +12,7 @@ from airflow.sdk.bases.hook import BaseHook
 DEFAULT_IAM_HOST = "https://dev-iam-proxy.dataplatform.vngcloud.tech"
 DEFAULT_TOKEN_PATH = "/accounts-api/v2/auth/token"
 DEFAULT_DATA_PLATFORM_URL = "https://dev-backend-proxy.dataplatform.vngcloud.tech/"
+DEFAULT_FE_URL = "https://dev-app.dataplatform.vngcloud.tech"
 
 DEFAULT_TOKEN_URL = f"{DEFAULT_IAM_HOST}{DEFAULT_TOKEN_PATH}"
 
@@ -41,6 +42,7 @@ class VNGCloudHook(BaseHook):
         cfg = self._load_connection_config()
         self.token_url = token_url or cfg["token_url"]
         self.data_platform_url = (data_platform_url or cfg["data_platform_url"]).rstrip("/")
+        self.fe_url = cfg["fe_url"].rstrip("/")
         self._client_id = cfg["client_id"]
         self._client_secret = cfg["client_secret"]
 
@@ -56,6 +58,7 @@ class VNGCloudHook(BaseHook):
         iam_host = DEFAULT_IAM_HOST
         token_path = DEFAULT_TOKEN_PATH
         data_platform_url = DEFAULT_DATA_PLATFORM_URL
+        fe_url = DEFAULT_FE_URL
 
         if conn is not None:
             client_id = conn.login
@@ -65,6 +68,7 @@ class VNGCloudHook(BaseHook):
             extra = conn.extra_dejson or {}
             token_path = extra.get("token_path", token_path)
             data_platform_url = extra.get("data_platform_url", data_platform_url)
+            fe_url = extra.get("fe_url", fe_url)
 
         if not client_id or not client_secret:
             from airflow.models import Variable
@@ -74,6 +78,7 @@ class VNGCloudHook(BaseHook):
             iam_host = Variable.get("vng_iam_host", default_var=iam_host).rstrip("/")
             token_path = Variable.get("vng_token_path", default_var=token_path)
             data_platform_url = Variable.get("vng_data_platform_url", default_var=data_platform_url)
+            fe_url = Variable.get("vng_fe_url", default_var=fe_url)
 
         client_id = client_id or os.getenv("VNG_CLIENT_ID")
         client_secret = client_secret or os.getenv("VNG_CLIENT_SECRET")
@@ -95,7 +100,12 @@ class VNGCloudHook(BaseHook):
             "client_secret": client_secret,
             "token_url": token_url,
             "data_platform_url": data_platform_url,
+            "fe_url": fe_url,
         }
+
+    def get_job_ui_url(self, workspace_id: str, job_id: str) -> str:
+        """Build link to Spark Job page on Data Platform UI."""
+        return f"{self.fe_url}/workspaces/{workspace_id}/jobs/{job_id}"
 
     def _request(
         self,

@@ -168,13 +168,17 @@ class GreenNodeOperator(BaseOperator):
             )
 
             if state.is_final:
+                ui_url = hook.get_job_ui_url(self.workspace_id, self.job_id)
+                self.log.info("View logs on Data Platform UI: %s", ui_url)
+
                 if state.is_successful:
                     self.log.info("Job run %s completed successfully.", self._run_id)
                     return
                 raise AirflowException(
                     f"Spark Job failed: state={state.value} "
                     f"exit_reason={data.get('exit_reason')} "
-                    f"error={data.get('error_summary')} run_id={self._run_id}"
+                    f"error={data.get('error_summary')} run_id={self._run_id} "
+                    f"logs={ui_url}"
                 )
 
             time.sleep(self.polling_period_seconds)
