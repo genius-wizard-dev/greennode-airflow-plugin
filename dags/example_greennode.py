@@ -1,5 +1,3 @@
-"""Ví dụ DAG sử dụng GreenNodeOperator."""
-
 from datetime import datetime
 
 from airflow import DAG

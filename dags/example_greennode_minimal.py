@@ -1,5 +1,3 @@
-"""Ví dụ DAG tối thiểu sử dụng GreenNodeOperator (style giống iomete)."""
-
 import pendulum
 from airflow import DAG
 
