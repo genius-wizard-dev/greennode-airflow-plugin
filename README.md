@@ -57,20 +57,20 @@ Build custom image — xem [docs/k8s-production.md](#kubernetes-production) ở 
 
 Tạo Airflow Connection (UI: **Admin → Connections → Add**):
 
-| Field            | Giá trị                                                            |
-| ---------------- | ------------------------------------------------------------------ |
-| Connection Id    | `vng_cloud_default` *(default — có thể đổi qua `vng_conn_id`)*     |
-| Connection Type  | `Generic`                                                          |
-| Host             | `https://pub-iamapis.api-dev.vngcloud.tech`                        |
-| Login            | `<VNG_CLIENT_ID>`                                                  |
-| Password         | `<VNG_CLIENT_SECRET>`                                              |
-| Extra (JSON)     | xem dưới                                                           |
+| Field           | Giá trị                                                        |
+| --------------- | -------------------------------------------------------------- |
+| Connection Id   | `vng_cloud_default` _(default — có thể đổi qua `vng_conn_id`)_ |
+| Connection Type | `Generic`                                                      |
+| Host            | `https://dev-iam-proxy.dataplatform.vngcloud.tech`                    |
+| Login           | `<VNG_CLIENT_ID>`                                              |
+| Password        | `<VNG_CLIENT_SECRET>`                                          |
+| Extra (JSON)    | xem dưới                                                       |
 
 **Extra** (JSON, optional — override default URL):
 
 ```json
 {
-  "data_platform_url": "https://dataplatform.api-dev.vngcloud.tech",
+  "data_platform_url": "https://dev-backend-proxy.dataplatform.vngcloud.tech",
   "token_path": "/accounts-api/v2/auth/token"
 }
 ```
@@ -80,11 +80,11 @@ Tạo Airflow Connection (UI: **Admin → Connections → Add**):
 ```bash
 export AIRFLOW_CONN_VNG_CLOUD_DEFAULT='{
   "conn_type": "generic",
-  "host": "https://pub-iamapis.api-dev.vngcloud.tech",
+  "host": "https://dev-iam-proxy.dataplatform.vngcloud.tech",
   "login": "<CLIENT_ID>",
   "password": "<CLIENT_SECRET>",
   "extra": {
-    "data_platform_url": "https://dataplatform.api-dev.vngcloud.tech"
+    "data_platform_url": "https://dev-backend-proxy.dataplatform.vngcloud.tech"
   }
 }'
 ```
@@ -93,7 +93,7 @@ Trong Helm chart, đặt qua Kubernetes Secret:
 
 ```bash
 kubectl -n airflow create secret generic vng-cloud-conn \
-  --from-literal=AIRFLOW_CONN_VNG_CLOUD_DEFAULT='{"conn_type":"generic","host":"https://pub-iamapis.api-dev.vngcloud.tech","login":"<CID>","password":"<CSECRET>","extra":{"data_platform_url":"https://dataplatform.api-dev.vngcloud.tech"}}'
+  --from-literal=AIRFLOW_CONN_VNG_CLOUD_DEFAULT='{"conn_type":"generic","host":"https://dev-iam-proxy.dataplatform.vngcloud.tech","login":"<CID>","password":"<CSECRET>","extra":{"data_platform_url":"https://dev-backend-proxy.dataplatform.vngcloud.tech"}}'
 ```
 
 ```yaml
@@ -146,16 +146,16 @@ Xem thêm [`dags/example_greennode.py`](./dags/example_greennode.py).
 
 ### `GreenNodeOperator` parameters
 
-| Parameter                | Required | Default              | Description                                                       |
-| ------------------------ | -------- | -------------------- | ----------------------------------------------------------------- |
-| `workspace_id`           | ✅       | —                    | Workspace ID (templated)                                          |
-| `job_id`                 | ✅       | —                    | Spark Job ID (templated)                                          |
-| `application_args`       | ❌       | `[""]`               | `list[str]`, `dict`, hoặc JSON string (templated)                 |
-| `vng_conn_id`            | ❌       | `vng_cloud_default`  | Airflow Connection ID                                             |
-| `token_url`              | ❌       | từ Connection / default | Override IAM token endpoint                                    |
-| `data_platform_url`      | ❌       | từ Connection / default | Override Data Platform base URL                                |
-| `polling_period_seconds` | ❌       | `15`                 | Thời gian giữa các lần poll status                                |
-| `do_xcom_push`           | ❌       | `False`              | Push `workspace_id`, `job_id`, `run_id` qua XCom                  |
+| Parameter                | Required | Default                 | Description                                       |
+| ------------------------ | -------- | ----------------------- | ------------------------------------------------- |
+| `workspace_id`           | ✅       | —                       | Workspace ID (templated)                          |
+| `job_id`                 | ✅       | —                       | Spark Job ID (templated)                          |
+| `application_args`       | ❌       | `[""]`                  | `list[str]`, `dict`, hoặc JSON string (templated) |
+| `vng_conn_id`            | ❌       | `vng_cloud_default`     | Airflow Connection ID                             |
+| `token_url`              | ❌       | từ Connection / default | Override IAM token endpoint                       |
+| `data_platform_url`      | ❌       | từ Connection / default | Override Data Platform base URL                   |
+| `polling_period_seconds` | ❌       | `15`                    | Thời gian giữa các lần poll status                |
+| `do_xcom_push`           | ❌       | `False`                 | Push `workspace_id`, `job_id`, `run_id` qua XCom  |
 
 **Templated fields**: `workspace_id`, `job_id`, `application_args` — hỗ trợ Jinja `{{ ds }}`, `{{ params.x }}`, `{{ var.value.* }}`.
 
@@ -163,11 +163,11 @@ Xem thêm [`dags/example_greennode.py`](./dags/example_greennode.py).
 
 ### XCom keys
 
-| Key            | Constant                  | Mô tả          |
-| -------------- | ------------------------- | -------------- |
-| `workspace_id` | `XCOM_WORKSPACE_ID_KEY`   | Workspace ID   |
-| `job_id`       | `XCOM_JOB_ID_KEY`         | Spark Job ID   |
-| `run_id`       | `XCOM_RUN_ID_KEY`         | Run ID         |
+| Key            | Constant                | Mô tả        |
+| -------------- | ----------------------- | ------------ |
+| `workspace_id` | `XCOM_WORKSPACE_ID_KEY` | Workspace ID |
+| `job_id`       | `XCOM_JOB_ID_KEY`       | Spark Job ID |
+| `run_id`       | `XCOM_RUN_ID_KEY`       | Run ID       |
 
 ### Spark Job states
 
@@ -294,7 +294,7 @@ Token nên đặt qua Kubernetes Secret, không hardcode.
 
 **Token request fail (401/403)**
 
-- Kiểm tra `Host` field của Connection có đúng IAM endpoint base không (mặc định: `https://pub-iamapis.api-dev.vngcloud.tech`).
+- Kiểm tra `Host` field của Connection có đúng IAM endpoint base không (mặc định: `https://dev-iam-proxy.dataplatform.vngcloud.tech`).
 - Kiểm tra `client_id` / `client_secret` trong VNG Cloud IAM console.
 
 ---

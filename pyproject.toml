@@ -5,27 +5,29 @@ description = "Apache Airflow plugin để tích hợp với GreenNode (VNG Clou
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
-authors = [
-    { name = "VNG Cloud", email = "support@vngcloud.vn" }
+authors = [{ name = "VNG Cloud", email = "support@vngcloud.vn" }]
+keywords = [
+  "airflow",
+  "airflow-plugin",
+  "vng-cloud",
+  "greennode",
+  "spark",
+  "data-platform",
 ]
-keywords = ["airflow", "airflow-plugin", "vng-cloud", "greennode", "spark", "data-platform"]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Framework :: Apache Airflow",
-    "Framework :: Apache Airflow :: Provider",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Software Development :: Libraries :: Python Modules",
+  "Development Status :: 4 - Beta",
+  "Framework :: Apache Airflow",
+  "Framework :: Apache Airflow :: Provider",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = [
-    "apache-airflow>=2.8.0",
-    "requests>=2.28.0",
-]
+dependencies = ["apache-airflow>=2.8.0", "requests>=2.28.0"]
 
 [project.urls]
 Homepage = "https://github.com/genius-wizard-dev/greennode-airflow-plugin"
@@ -37,13 +39,13 @@ greennode = "greennode_airflow_plugin.plugin:GreenNodePlugin"
 
 [project.optional-dependencies]
 dev = [
-    "black>=24.0.0",
-    "isort>=5.12.0",
-    "mypy>=1.8.0",
-    "pytest>=8.0.0",
-    "pytest-mock>=3.12.0",
-    "ruff>=0.4.0",
-    "types-requests",
+  "black>=24.0.0",
+  "isort>=5.12.0",
+  "mypy>=1.8.0",
+  "pytest>=8.0.0",
+  "pytest-mock>=3.12.0",
+  "ruff>=0.4.0",
+  "types-requests",
 ]
 
 [build-system]

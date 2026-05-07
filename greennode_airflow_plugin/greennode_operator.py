@@ -1,4 +1,4 @@
-"""GreenNode Operator — trigger và theo dõi Spark Job trên VNG Data Platform."""
+"""GreenNode Operator — trigger and monitor Spark Job on VNG Data Platform."""
 
 import json
 import time
@@ -16,7 +16,7 @@ XCOM_RUN_ID_KEY = "run_id"
 
 
 class SparkJobState(str, Enum):
-    """Trạng thái Spark Job theo Data Platform API schema."""
+    """Spark Job state per Data Platform API schema."""
 
     QUEUING = "QUEUING"
     SCHEDULING = "SCHEDULING"
@@ -47,7 +47,7 @@ class SparkJobState(str, Enum):
 
 class GreenNodeOperator(BaseOperator):
     """
-    Trigger Spark Job trên VNG Data Platform và poll trạng thái cho đến khi hoàn thành.
+    Trigger a Spark Job on VNG Data Platform and poll until completion.
 
     API flow:
       1. POST /api/v1/workspaces/{ws}/spark-jobs/{job}/runs
@@ -77,9 +77,13 @@ class GreenNodeOperator(BaseOperator):
         super().__init__(**kwargs)
 
         if not workspace_id:
-            raise AirflowException("Tham số `workspace_id` là bắt buộc.")
+            raise AirflowException("Parameter `workspace_id` is required.")
         if not job_id:
-            raise AirflowException("Tham số `job_id` là bắt buộc.")
+            raise AirflowException("Parameter `job_id` is required.")
+        if polling_period_seconds <= 0:
+            raise AirflowException(
+                f"Parameter `polling_period_seconds` must be > 0, got {polling_period_seconds}."
+            )
 
         self.workspace_id = workspace_id
         self.job_id = job_id
@@ -120,7 +124,10 @@ class GreenNodeOperator(BaseOperator):
             except json.JSONDecodeError:
                 pass
             return [value]
-        raise AirflowException(f"application_args type không hỗ trợ: {type(value)}")
+        raise AirflowException(
+            f"Unsupported application_args type: {type(value).__name__} "
+            f"(expected list, dict, str, or None)."
+        )
 
     def execute(self, context):
         hook = self._get_hook()
@@ -131,8 +138,10 @@ class GreenNodeOperator(BaseOperator):
 
         self._run_id = data.get("id") or data.get("run_id")
         if not self._run_id:
-            raise AirflowException(f"Không tìm thấy run id trong response: {data}")
-        self.log.info("Job triggered. run_id=%s", self._run_id)
+            raise AirflowException(
+                f"Submit response missing run id (expected 'id' or 'run_id'): {data}"
+            )
+        self.log.info("Job triggered successfully. run_id=%s", self._run_id)
 
         if self.do_xcom_push:
             ti = context["ti"]
@@ -144,7 +153,9 @@ class GreenNodeOperator(BaseOperator):
         return data
 
     def _poll_until_final(self, hook: VNGCloudHook) -> None:
-        self.log.info("Bắt đầu polling status (interval=%ss)...", self.polling_period_seconds)
+        self.log.info(
+            "Polling job status (interval=%ss)...", self.polling_period_seconds
+        )
         while True:
             data = hook.get_job_run(self.workspace_id, self.job_id, self._run_id)
             state = SparkJobState.from_str(data.get("status"))
@@ -158,22 +169,27 @@ class GreenNodeOperator(BaseOperator):
 
             if state.is_final:
                 if state.is_successful:
-                    self.log.info("Job %s hoàn thành thành công.", self._run_id)
+                    self.log.info("Job run %s completed successfully.", self._run_id)
                     return
                 raise AirflowException(
-                    f"Spark Job thất bại với state={state.value} "
-                    f"exit_reason={data.get('exit_reason')} error={data.get('error_summary')}"
+                    f"Spark Job failed: state={state.value} "
+                    f"exit_reason={data.get('exit_reason')} "
+                    f"error={data.get('error_summary')} run_id={self._run_id}"
                 )
 
             time.sleep(self.polling_period_seconds)
 
     def on_kill(self):
         if not self._run_id:
-            self.log.warning("Không có run_id để cancel.")
+            self.log.warning("No run_id available to cancel.")
             return
-        self.log.info("Task bị kill — cancelling job run [%s]...", self._run_id)
+        self.log.info("Task killed — cancelling job run [%s]...", self._run_id)
         try:
-            self._get_hook().cancel_job_run(self.workspace_id, self.job_id, self._run_id)
+            self._get_hook().cancel_job_run(
+                self.workspace_id, self.job_id, self._run_id
+            )
             self.log.info("Cancelled run [%s].", self._run_id)
         except Exception as e:
-            self.log.error("Cancel run [%s] thất bại: %s", self._run_id, e)
+            self.log.error(
+                "Failed to cancel run [%s]: %s", self._run_id, e, exc_info=True
+            )

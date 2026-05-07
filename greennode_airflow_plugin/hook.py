@@ -1,24 +1,26 @@
 """VNG Cloud / GreenNode Airflow Hook."""
 
 import base64
-import json
 import os
 import time
 from typing import Any
 
 import requests
 from airflow.exceptions import AirflowException
-from airflow.hooks.base import BaseHook
+from airflow.sdk.bases.hook import BaseHook
 
-DEFAULT_IAM_HOST = "https://pub-iamapis.api-dev.vngcloud.tech"
+DEFAULT_IAM_HOST = "https://dev-iam-proxy.dataplatform.vngcloud.tech"
 DEFAULT_TOKEN_PATH = "/accounts-api/v2/auth/token"
-DEFAULT_DATA_PLATFORM_URL = "https://dataplatform.api-dev.vngcloud.tech"
+DEFAULT_DATA_PLATFORM_URL = "https://dev-backend-proxy.dataplatform.vngcloud.tech/"
 
 DEFAULT_TOKEN_URL = f"{DEFAULT_IAM_HOST}{DEFAULT_TOKEN_PATH}"
 
+_DEFAULT_TIMEOUT = 30
+_LOG_BODY_LIMIT = 1000
+
 
 class VNGCloudHook(BaseHook):
-    """Hook để kết nối với VNG Cloud IAM (lấy access token) và Data Platform API."""
+    """Hook for VNG Cloud IAM (access token) and Data Platform API."""
 
     conn_name_attr = "vng_conn_id"
     default_conn_name = "vng_cloud_default"
@@ -43,7 +45,7 @@ class VNGCloudHook(BaseHook):
         self._client_secret = cfg["client_secret"]
 
     def _load_connection_config(self) -> dict[str, Any]:
-        """Đọc config từ Airflow Connection; fallback sang env nếu connection không tồn tại."""
+        """Load config from Airflow Connection; fallback to env vars if connection is missing."""
         try:
             conn = self.get_connection(self.vng_conn_id)
         except Exception:
@@ -69,9 +71,9 @@ class VNGCloudHook(BaseHook):
 
         if not client_id or not client_secret:
             raise AirflowException(
-                f"VNG Cloud credentials không được cấu hình. "
-                f"Tạo Airflow Connection '{self.vng_conn_id}' với login=client_id, password=client_secret, "
-                f"hoặc set env VNG_CLIENT_ID / VNG_CLIENT_SECRET."
+                f"VNG Cloud credentials are not configured. "
+                f"Create Airflow Connection '{self.vng_conn_id}' with login=client_id, "
+                f"password=client_secret, or set env VNG_CLIENT_ID / VNG_CLIENT_SECRET."
             )
 
         if not token_path.startswith("/"):
@@ -85,8 +87,55 @@ class VNGCloudHook(BaseHook):
             "data_platform_url": data_platform_url,
         }
 
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        json_body: dict[str, Any] | None = None,
+        timeout: int = _DEFAULT_TIMEOUT,
+        op: str = "request",
+    ) -> dict[str, Any]:
+        """HTTP request wrapper with consistent error handling and logging."""
+        try:
+            resp = requests.request(
+                method, url, headers=headers, json=json_body, timeout=timeout
+            )
+        except requests.exceptions.Timeout as e:
+            raise AirflowException(
+                f"VNG {op} timed out after {timeout}s: {url}"
+            ) from e
+        except requests.exceptions.ConnectionError as e:
+            raise AirflowException(
+                f"VNG {op} connection error to {url}: {e}"
+            ) from e
+        except requests.exceptions.RequestException as e:
+            raise AirflowException(
+                f"VNG {op} request failed for {url}: {e}"
+            ) from e
+
+        if not resp.ok:
+            body_preview = (resp.text or "")[:_LOG_BODY_LIMIT]
+            self.log.error(
+                "VNG %s failed: %s %s — url=%s body=%s",
+                op, resp.status_code, resp.reason, url, body_preview,
+            )
+            raise AirflowException(
+                f"VNG {op} returned HTTP {resp.status_code} {resp.reason} "
+                f"for {url}. Response: {body_preview}"
+            )
+
+        try:
+            return resp.json()
+        except ValueError as e:
+            raise AirflowException(
+                f"VNG {op} returned non-JSON response from {url}: "
+                f"{(resp.text or '')[:_LOG_BODY_LIMIT]}"
+            ) from e
+
     def get_access_token(self, force_refresh: bool = False) -> str:
-        """Lấy access token (cache trong memory, tự refresh trước khi hết hạn 60s)."""
+        """Get access token (in-memory cache, auto-refresh 60s before expiry)."""
         now = int(time.time())
         if not force_refresh and self._token and now < self._expiry - 60:
             return self._token
@@ -100,13 +149,25 @@ class VNGCloudHook(BaseHook):
         }
         payload = {"grant_type": "client_credentials", "scope": "email"}
 
-        resp = requests.post(self.token_url, headers=headers, json=payload, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        data = self._request(
+            "POST",
+            self.token_url,
+            headers=headers,
+            json_body=payload,
+            op="token request",
+        )
 
-        self._token = data["access_token"]
-        self._expiry = now + data.get("expires_in", 1800)
-        self.log.info("VNG Access Token renewed (expires_in=%ss)", data.get("expires_in"))
+        token = data.get("access_token")
+        if not token:
+            raise AirflowException(
+                f"VNG token response missing 'access_token' field: {data}"
+            )
+
+        self._token = token
+        self._expiry = now + int(data.get("expires_in", 1800))
+        self.log.info(
+            "VNG access token renewed (expires_in=%ss)", data.get("expires_in")
+        )
         return self._token
 
     def get_headers(self) -> dict[str, str]:
@@ -116,26 +177,49 @@ class VNGCloudHook(BaseHook):
             "Content-Type": "application/json",
         }
 
-    def _unwrap(self, resp_json: dict[str, Any]) -> dict[str, Any]:
+    def _unwrap(self, resp_json: dict[str, Any], op: str) -> dict[str, Any]:
         if not resp_json.get("success", True):
-            error = resp_json.get("error") or resp_json.get("message") or "Unknown error"
-            raise AirflowException(f"Data Platform API error: {error}")
+            error = (
+                resp_json.get("error")
+                or resp_json.get("message")
+                or "unknown error"
+            )
+            raise AirflowException(f"VNG Data Platform {op} error: {error}")
         return resp_json.get("data") or {}
 
-    def submit_job_run(self, workspace_id: str, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        url = f"{self.data_platform_url}/api/v1/workspaces/{workspace_id}/spark-jobs/{job_id}/runs"
-        resp = requests.post(url, headers=self.get_headers(), json=payload, timeout=60)
-        resp.raise_for_status()
-        return self._unwrap(resp.json())
+    def submit_job_run(
+        self, workspace_id: str, job_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        url = (
+            f"{self.data_platform_url}/api/v1/workspaces/{workspace_id}"
+            f"/spark-jobs/{job_id}/runs"
+        )
+        data = self._request(
+            "POST", url, headers=self.get_headers(), json_body=payload,
+            timeout=60, op="submit job run",
+        )
+        return self._unwrap(data, "submit job run")
 
-    def get_job_run(self, workspace_id: str, job_id: str, run_id: str) -> dict[str, Any]:
-        url = f"{self.data_platform_url}/api/v1/workspaces/{workspace_id}/spark-jobs/{job_id}/runs/{run_id}"
-        resp = requests.get(url, headers=self.get_headers(), timeout=30)
-        resp.raise_for_status()
-        return self._unwrap(resp.json())
+    def get_job_run(
+        self, workspace_id: str, job_id: str, run_id: str
+    ) -> dict[str, Any]:
+        url = (
+            f"{self.data_platform_url}/api/v1/workspaces/{workspace_id}"
+            f"/spark-jobs/{job_id}/runs/{run_id}"
+        )
+        data = self._request(
+            "GET", url, headers=self.get_headers(), op="get job run",
+        )
+        return self._unwrap(data, "get job run")
 
-    def cancel_job_run(self, workspace_id: str, job_id: str, run_id: str) -> dict[str, Any]:
-        url = f"{self.data_platform_url}/api/v1/workspaces/{workspace_id}/spark-jobs/{job_id}/runs/{run_id}/cancel"
-        resp = requests.post(url, headers=self.get_headers(), timeout=30)
-        resp.raise_for_status()
-        return self._unwrap(resp.json())
+    def cancel_job_run(
+        self, workspace_id: str, job_id: str, run_id: str
+    ) -> dict[str, Any]:
+        url = (
+            f"{self.data_platform_url}/api/v1/workspaces/{workspace_id}"
+            f"/spark-jobs/{job_id}/runs/{run_id}/cancel"
+        )
+        data = self._request(
+            "POST", url, headers=self.get_headers(), op="cancel job run",
+        )
+        return self._unwrap(data, "cancel job run")
