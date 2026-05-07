@@ -13,23 +13,44 @@ Plugin cung cấp `GreenNodeOperator` xử lý toàn bộ vòng đời job:
 
 ## Installation
 
+**Từ PyPI (production):**
+
 ```bash
-pip install git+https://github.com/genius-wizard-dev/greennode-airflow-plugin.git@main
+pip install greennode-airflow-plugin
 ```
 
-Hoặc cài từ source:
+**Từ TestPyPI (đang dev / chưa release lên PyPI):**
+
+```bash
+pip install \
+  --index-url https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple/ \
+  greennode-airflow-plugin==0.3.3
+```
+
+> `--extra-index-url` là **bắt buộc** — TestPyPI không có `apache-airflow` / `requests`, phải fallback sang PyPI thật để cài dependencies.
+
+**Từ source (local dev):**
 
 ```bash
 git clone https://github.com/genius-wizard-dev/greennode-airflow-plugin.git
 cd greennode-airflow-plugin
-pip install -e .
+pip install -e ".[dev]"
 ```
 
-Restart Airflow scheduler/worker và verify:
+Verify đã cài thành công:
+
+```bash
+pip show greennode-airflow-plugin
+python -c "from greennode_airflow_plugin import GreenNodeOperator, VNGCloudHook; print('OK')"
+```
+
+Hoặc check qua Airflow CLI:
 
 ```bash
 airflow plugins
-# Phải thấy plugin "greennode" với operator GreenNodeOperator + hook VNGCloudHook
+# Phải thấy dòng:
+# greennode | greennode-airflow-plugin==0.3.3: EntryPoint(name='greennode', value='greennode_airflow_plugin.plugin:GreenNodePlugin', group='airflow.plugins')
 ```
 
 ### Cài trên Airflow Helm chart (dev)
@@ -39,17 +60,20 @@ Trong `values.yaml` / `override.yaml`:
 ```yaml
 env:
   - name: _PIP_ADDITIONAL_REQUIREMENTS
-    value: "git+https://github.com/genius-wizard-dev/greennode-airflow-plugin.git@main"
+    value: "--index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ greennode-airflow-plugin==0.3.3"
 ```
 
 ```bash
 helm upgrade <release> . -n <namespace> -f override.yaml
-kubectl -n <namespace> rollout restart deploy sts
 ```
+
+Helm sẽ rolling restart pods (scheduler/worker/triggerer/api-server) → mỗi pod khi start sẽ `pip install` plugin từ TestPyPI.
+
+> Khi đã release lên PyPI thật, đơn giản hoá thành: `value: "greennode-airflow-plugin==0.3.3"`.
 
 ### Cài trên Airflow Helm chart (production)
 
-Build custom image — xem [docs/k8s-production.md](#kubernetes-production) ở dưới.
+Build custom image — xem [Kubernetes (Production)](#kubernetes-production) ở dưới.
 
 ---
 
@@ -142,7 +166,7 @@ with DAG(
     )
 ```
 
-Xem thêm [`dags/example_greennode.py`](./dags/example_greennode.py).
+Xem thêm [`dags/example_greennode.py`](./dags/example_greennode.py) (full) hoặc [`dags/example_greennode_minimal.py`](./dags/example_greennode_minimal.py) (minimal).
 
 ### `GreenNodeOperator` parameters
 
@@ -193,32 +217,31 @@ SparkJobState.RUNNING.is_final        # False
 
 ## Kubernetes (Production)
 
-Build custom image (recommend):
+Khi release ổn định, **không nên** dùng `_PIP_ADDITIONAL_REQUIREMENTS` (chậm pod start, phụ thuộc network mỗi lần khởi động). Build custom image:
 
 ```dockerfile
 FROM apache/airflow:3.2.0
-RUN pip install --no-cache-dir \
-    git+https://github.com/genius-wizard-dev/greennode-airflow-plugin.git@v0.2.0
+RUN pip install --no-cache-dir greennode-airflow-plugin==0.3.3
 ```
 
 ```bash
-docker build -t <registry>/airflow-greennode:0.2.0 .
-docker push <registry>/airflow-greennode:0.2.0
+docker build -t <registry>/airflow-greennode:0.3.3 .
+docker push <registry>/airflow-greennode:0.3.3
 ```
 
 ```yaml
 # override.yaml
 defaultAirflowRepository: <registry>/airflow-greennode
-defaultAirflowTag: "0.2.0"
+defaultAirflowTag: "0.3.3"
 
 images:
   airflow:
     repository: <registry>/airflow-greennode
-    tag: "0.2.0"
+    tag: "0.3.3"
     pullPolicy: IfNotPresent
   pod_template:
     repository: <registry>/airflow-greennode
-    tag: "0.2.0"
+    tag: "0.3.3"
     pullPolicy: IfNotPresent
 ```
 
@@ -243,59 +266,66 @@ make build            # build wheel
 ```
 greennode-airflow-plugin/
 ├── greennode_airflow_plugin/
-│   ├── __init__.py            # Package metadata, public exports
-│   ├── plugin.py              # AirflowPlugin registration
-│   ├── greennode_operator.py  # GreenNodeOperator + SparkJobState
-│   └── hook.py                # VNGCloudHook (IAM, Data Platform API)
+│   ├── __init__.py                   # Package metadata, public exports
+│   ├── plugin.py                     # AirflowPlugin registration (hooks + operators)
+│   ├── greennode_operator.py         # GreenNodeOperator + SparkJobState
+│   └── hook.py                       # VNGCloudHook (IAM, Data Platform API)
 ├── dags/
-│   └── example_greennode.py
+│   ├── example_greennode.py          # Full example (templating, Variables)
+│   └── example_greennode_minimal.py  # Minimal example
 ├── tests/
 │   ├── test_state.py
 │   └── test_operator.py
+├── .github/workflows/
+│   └── publish.yml                   # Auto-publish PyPI/TestPyPI via OIDC
 ├── Makefile
 ├── pyproject.toml
 └── README.md
 ```
 
+### Release workflow
+
+```bash
+# 1. Bump version trong pyproject.toml (ví dụ 0.3.3 → 0.3.4)
+# 2. Commit + tag + push
+git commit -am "Release v0.3.4"
+git tag v0.3.4
+git push origin main && git push origin v0.3.4
+```
+
+GitHub Actions sẽ tự build và publish lên TestPyPI. Để publish lên PyPI thật: vào tab **Actions → Publish to PyPI → Run workflow → target = pypi**.
+
 ---
 
 ## Troubleshooting
 
-**`airflow plugins` không thấy plugin**
+**`ModuleNotFoundError: greennode_airflow_plugin`**
 
-1. Entry-point group phải là `airflow.plugins`:
-   ```toml
-   [project.entry-points."airflow.plugins"]
-   greennode = "greennode_airflow_plugin.plugin:GreenNodePlugin"
-   ```
-2. Verify package đã cài:
+1. Verify package đã cài:
    ```bash
    pip show greennode-airflow-plugin
    ```
-3. Check log entrypoint:
+2. Trên Kubernetes, check pod có install được không (lúc start mới chạy `pip install`):
    ```bash
-   kubectl -n airflow logs deploy/airflow-scheduler | grep -iE "pip|greennode"
+   kubectl -n airflow logs deploy/airflow-scheduler -c scheduler | grep -iE "pip|greennode"
    ```
+3. Nếu dùng `_PIP_ADDITIONAL_REQUIREMENTS` mà version trong `pyproject.toml` không bump, pip có thể cache → restart pod không reinstall. Bump version (vd `0.3.3` → `0.3.4`) hoặc đổi sang Docker image-based (xem [Kubernetes (Production)](#kubernetes-production)).
 
 **Task pod (KubernetesExecutor) không có plugin**
 
 - Đảm bảo `images.pod_template` cùng image với scheduler/worker.
-- Hoặc set env `_PIP_ADDITIONAL_REQUIREMENTS` ở top-level `env:` để propagate.
-
-**Repo private, pip clone fail**
-
-```yaml
-env:
-  - name: _PIP_ADDITIONAL_REQUIREMENTS
-    value: "git+https://${GITHUB_TOKEN}@github.com/genius-wizard-dev/greennode-airflow-plugin.git@main"
-```
-
-Token nên đặt qua Kubernetes Secret, không hardcode.
+- Hoặc set env `_PIP_ADDITIONAL_REQUIREMENTS` ở top-level `env:` để propagate xuống task pod.
 
 **Token request fail (401/403)**
 
 - Kiểm tra `Host` field của Connection có đúng IAM endpoint base không (mặc định: `https://dev-iam-proxy.dataplatform.vngcloud.tech`).
 - Kiểm tra `client_id` / `client_secret` trong VNG Cloud IAM console.
+- Xác minh cả `client_id` lẫn `client_secret` thuộc cùng environment (dev / prod).
+
+**Lỗi parse DAG: "Don't use runtime-varying value as argument in Dag constructor"**
+
+- Không dùng `pendulum.today()`, `datetime.now()`, `Variable.get(...)` trực tiếp trong `DAG(...)` / `Operator(...)` args.
+- Dùng giá trị tĩnh (`pendulum.datetime(2026, 1, 1, tz="UTC")`) hoặc Jinja template (`"{{ ds }}"`, `"{{ var.value.x }}"`).
 
 ---
 
