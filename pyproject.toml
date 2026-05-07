@@ -17,7 +17,6 @@ keywords = [
 classifiers = [
   "Development Status :: 4 - Beta",
   "Framework :: Apache Airflow",
-  "Framework :: Apache Airflow :: Provider",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
   "Operating System :: OS Independent",
