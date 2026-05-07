@@ -9,7 +9,7 @@ args = {
     "owner": "airflow",
     "email": ["airflow@example.com"],
     "depends_on_past": False,
-    "start_date": pendulum.today("UTC"),
+    "start_date": pendulum.datetime(2026, 1, 1, tz="UTC"),
 }
 
 dag = DAG(dag_id="greennode-task", default_args=args, schedule=None)
