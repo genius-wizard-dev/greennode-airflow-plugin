@@ -34,9 +34,6 @@ Homepage = "https://github.com/genius-wizard-dev/greennode-airflow-plugin"
 Repository = "https://github.com/genius-wizard-dev/greennode-airflow-plugin"
 Issues = "https://github.com/genius-wizard-dev/greennode-airflow-plugin/issues"
 
-[project.entry-points."airflow.plugins"]
-greennode = "greennode_airflow_plugin.plugin:GreenNodePlugin"
-
 [project.optional-dependencies]
 dev = [
   "black>=24.0.0",
