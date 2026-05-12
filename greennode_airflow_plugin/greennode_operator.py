@@ -109,7 +109,11 @@ class GreenNodeOperator(BaseOperator):
     @staticmethod
     def _normalize_args(value: Any) -> list[str]:
         if value is None:
-            return [""]
+            # No args → empty list. Returning [""] would inject a single
+            # blank positional token (`sys.argv[1] = ""`) into the Spark
+            # driver, which trips strict argparse setups and confuses
+            # scripts that count `len(sys.argv)`.
+            return []
         if isinstance(value, list):
             return value
         if isinstance(value, dict):

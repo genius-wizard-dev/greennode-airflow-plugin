@@ -22,7 +22,14 @@ def test_required_job_id():
 
 
 def test_normalize_args_none():
-    assert GreenNodeOperator._normalize_args(None) == [""]
+    # None must produce an EMPTY list, not a single blank token —
+    # otherwise the Spark driver receives `sys.argv[1] = ""`, which
+    # confuses argparse and any script that branches on len(sys.argv).
+    assert GreenNodeOperator._normalize_args(None) == []
+
+
+def test_normalize_args_empty_list():
+    assert GreenNodeOperator._normalize_args([]) == []
 
 
 def test_normalize_args_list():
